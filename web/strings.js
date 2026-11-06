@@ -177,8 +177,10 @@ var I18N = (function () {
     var both = name(d, loc, {month: 'long', day: 'numeric'});
     var rest = both.replace(new RegExp('(^|\\s)' + d.getDate() + '\\.?(?=\\s|$)'), ' ').replace(/^\s+|\s+$/g, '');
     if (!rest || rest === both) return plain;
-    var words = rest.split(/\s+/);
-    for (var i = 0; i < words.length; i++) if (words[i] === plain) return plain;
+    var words = rest.split(/\s+/), low = plain.toLowerCase();
+    // Old Chromium (webOS 3) can capitalize the standalone month ("Noviembre") while the day form stays
+    // lowercase ("5 de noviembre"): compare without case, or "5 de " + "de noviembre" doubles "de".
+    for (var i = 0; i < words.length; i++) if (words[i].toLowerCase() === low) return plain;
     return rest;
   }
 
