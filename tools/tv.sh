@@ -10,7 +10,7 @@
 #   TV_SSH_PASSWORD  root password of the rooted TV's SSH server
 #   TV_APP           optional, app to open (default io.freemytv)
 # Needs: sshpass (brew install sshpass), python3.
-set -u
+set -uo pipefail
 : "${TV_IP:?Define TV_IP (Ethernet IP of the TV)}"
 : "${TV_MAC:?Define TV_MAC (Ethernet MAC of the TV)}"
 : "${TV_SSH_PASSWORD:?Define TV_SSH_PASSWORD}"
@@ -18,9 +18,12 @@ IP=$TV_IP
 MAC=$TV_MAC
 APP=${TV_APP:-io.freemytv}
 PW=$TV_SSH_PASSWORD
+# The TV's host key is pinned on the first connection and must match afterwards (the password goes to it).
+KH=${XDG_STATE_HOME:-$HOME/.local/state}/freemytv/known_hosts
+mkdir -p "${KH%/*}"
 
 tv() {  # run a command on the TV; -tt because luna-send fails silently without a tty
-  sshpass -p "$PW" ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  sshpass -p "$PW" ssh -tt -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KH" \
     -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa -o LogLevel=ERROR \
     -o ConnectTimeout=8 -o NumberOfPasswordPrompts=1 "root@$IP" "$@" 2>&1 | tr -d '\r'
 }
@@ -40,8 +43,12 @@ wait_ssh() {  # $1 = seconds
   for _ in $(seq 1 "$1"); do up && return 0; sleep 1; done
   return 1
 }
+ok() {  # run a command on the TV; succeeds only if it answers returnValue true (-102: the screen was already on)
+  local out; out=$(tv "$1")
+  grep -q -e '"returnValue": *true' -e '"-102"' <<<"$out" || { echo "$out" >&2; return 1; }
+}
 power() {  # $1 = turnOnScreen | turnOffScreen
-  tv "luna-send -n 1 -w 4000 luna://com.webos.service.tvpower/power/$1 '{\"standbyMode\":\"active\"}'"
+  ok "luna-send -n 1 -w 4000 luna://com.webos.service.tvpower/power/$1 '{\"standbyMode\":\"active\"}'"
 }
 on() {
   if ! up; then
@@ -49,13 +56,13 @@ on() {
   fi
   up || { echo "La TV no responde en $IP tras Wake-on-LAN." >&2; exit 1; }
   sleep 3   # the sshd answers before the TV has finished resuming
-  power turnOnScreen | grep -v -e '"-102"' || true   # -102: the screen was already on
+  power turnOnScreen
 }
 
 case "${1:-}" in
   on)     on ;;
-  off)    up || { echo "La TV ya no responde (apagada del todo)."; exit 0; }; power turnOffScreen ;;
-  open)   on && sleep 2 && tv "luna-send-pub -n 1 -f luna://com.webos.applicationManager/launch '{\"id\":\"$APP\"}'" ;;
+  off)    up || { echo "La TV no responde en $IP: no puedo apagar la pantalla." >&2; exit 1; }; power turnOffScreen ;;
+  open)   on && sleep 2 && ok "luna-send-pub -n 1 -f luna://com.webos.applicationManager/launch '{\"id\":\"$APP\"}'" ;;
   status) if up; then echo "TV alcanzable en $IP"; else ping -c1 -t2 "$IP" >/dev/null 2>&1 && echo "Responde a ping, SSH cerrado" || echo "TV inalcanzable (apagada del todo o IP distinta)"; fi ;;
   *)      echo "Uso: $0 on|off|open|status" >&2; exit 2 ;;
 esac
